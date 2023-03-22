@@ -5,7 +5,7 @@ CXXFLAGS := -O3 -std=c++11
 all: allreduce
 
 allreduce: allreduce.cpp
-	mpicxx $^ ${CXXFLAGS} -o $@
+	mpicxx $^ -DDEBUG ${CXXFLAGS} -o $@
 
 clean:
 	rm allreduce

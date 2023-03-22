@@ -1,4 +1,4 @@
-#! /bin/sh
+#! /bin/bash
 
 set -x
 
@@ -9,4 +9,4 @@ spack load openmpi
 make -j 1
 
 # srun -N 1 -n 4 ./allreduce 10 100000000
-srun -N 1 -n 4 ./allreduce 1 5
+srun -N 2 -n 4 ./allreduce 10 100000000

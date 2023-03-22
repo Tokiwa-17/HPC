@@ -30,16 +30,22 @@ void printSendBuf(void* sendbuf, int n) {
     std::cout << "----------------------------------------" << std::endl;
 }
 
-std::vector<std::pair<int, int>> splitArray(int n, int comm_sz) {
-    auto split = std::vector<std::pair<int, int>>(comm_sz, std::make_pair(0, 0));
-    auto chunkSize = n / comm_sz;
+std::vector<std::pair<int, int>>* splitArray(int n, int comm_sz) {
+    /**
+    \brief an array whose length is l is divided into n splits, the size of l % n splits would
+    be l // n + 1, and the rest is l // n
+    */
+    std::vector<std::pair<int, int>>* split = new std::vector<std::pair<int, int>>(comm_sz, std::make_pair(0, 0));
+    int splitNum = comm_sz;
+    int curPos = 0;
     for (int i = 0; i < comm_sz; i++) {
-        split[i].first = i * chunkSize;
-        if (i == comm_sz - 1) {
-            split[i].second = std::max(n, (i + 1) * chunkSize);
-        } else {
-            split[i].second = (i + 1) * chunkSize;
-        }
+        int chunkSize;
+        if (i < n % splitNum)
+            chunkSize = n / splitNum + 1;
+        else chunkSize = n / splitNum;
+        (*split)[i].first = curPos;
+        (*split)[i].second = (*split)[i].first + chunkSize;
+        curPos = (*split)[i].second;
     }
     return split;
 }
@@ -49,69 +55,65 @@ void Ring_Allreduce(void* sendbuf, void* recvbuf, int n, MPI_Comm comm, int comm
    /**
     \brief Ring algorithm, which could be divided into Reduce-scatter and allgather
     */
-    auto split = splitArray(n, comm_sz);
-    int blockNum = comm_sz, blockSize = n / comm_sz * 4;
+    int blockNum = comm_sz;
     MPI_Request sendReq, recvReq;
     auto ranks = Src_Dest_Rank(my_rank, comm_sz);
+    // std::cout << "ttttt" << std::endl;
+    auto split = splitArray(n, comm_sz);
+    // #ifdef DEBUG
+    // if (my_rank == 0) {
+    //     auto split_value = *split;
+    //     for (auto it: split_value)  {
+    //         std::cout << it.first << ' ' << it.second << std::endl;
+    //     }
+    // }
+    // #endif // DEBUG
     int srcRank = std::get<0>(ranks), destRank = std::get<1>(ranks);
     // Step 1: Reduce-scatter
     for (int k = 0; k < comm_sz - 1; k++) {
         int blockIdx = (my_rank - k + comm_sz) % comm_sz;
         int recvBlockIdx = (srcRank - k + comm_sz) % comm_sz;
         //std::cout << my_rank << ' ' << blockIdx << ' ' << recvBlockIdx << std::endl;
-        if (my_rank == comm_sz - 1) {
-            MPI_Isend(sendbuf + blockIdx * blockSize, blockSize, MPI_FLOAT, destRank, 0, MPI_COMM_WORLD, &sendReq);
-        } else {
-            MPI_Isend(sendbuf + blockIdx * blockSize, blockSize, MPI_FLOAT, destRank, 0, MPI_COMM_WORLD, &sendReq);
-        }
-        if (my_rank == 0) {
-            MPI_Irecv(recvbuf + recvBlockIdx * blockSize, blockSize, MPI_FLOAT, srcRank, 0, MPI_COMM_WORLD, &recvReq);
-        } else {
-            MPI_Irecv(recvbuf + recvBlockIdx * blockSize, blockSize, MPI_FLOAT, srcRank, 0, MPI_COMM_WORLD, &recvReq);
-        }
+        auto interval = (*split)[blockIdx];
+        auto blockSize = (interval.second - interval.first);
+        MPI_Isend(sendbuf + interval.first * 4, blockSize, MPI_FLOAT, destRank, 0, MPI_COMM_WORLD, &sendReq);
+        auto recvInterval = (*split)[recvBlockIdx];
+        blockSize = (recvInterval.second - recvInterval.first);
+        MPI_Irecv(recvbuf + recvInterval.first * 4, blockSize, MPI_FLOAT, srcRank, 0, MPI_COMM_WORLD, &recvReq);
         MPI_Wait(&sendReq, nullptr);    
         MPI_Wait(&recvReq, nullptr);
-        int l = recvBlockIdx * blockSize;
-        int r = l + blockSize;
+        int l = recvInterval.first * 4;
+        int r = recvInterval.second * 4;
         while(l < r) {
             *static_cast<float*>(sendbuf + l) += *static_cast<float*>(recvbuf + l);
             l += 4;
         }
     }
-    // #ifdef DEBUG
-    // std::cout << "my_rank: " << my_rank << std::endl;
-    // printSendBuf(sendbuf, n);
-    // #endif
     // Step 2: Allgather
     for (int k = 0; k < comm_sz - 1; k++) {
         int blockIdx = (my_rank + 1 - k + comm_sz) % comm_sz;
         int recvBlockIdx = (srcRank + 1 - k + comm_sz) % comm_sz;
-        MPI_Isend(sendbuf + blockIdx * blockSize, blockSize, MPI_FLOAT, destRank, 0, MPI_COMM_WORLD, &sendReq);
-        MPI_Irecv(recvbuf + recvBlockIdx * blockSize, blockSize, MPI_FLOAT, srcRank, 0, MPI_COMM_WORLD, &recvReq);
+        auto interval = (*split)[blockIdx];
+        auto blockSize = (interval.second - interval.first);
+        MPI_Isend(sendbuf + interval.first * 4, blockSize, MPI_FLOAT, destRank, 0, MPI_COMM_WORLD, &sendReq);
+        auto recvInterval = (*split)[recvBlockIdx];
+        blockSize = (recvInterval.second - recvInterval.first); 
+        MPI_Irecv(recvbuf + recvInterval.first * 4, blockSize, MPI_FLOAT, srcRank, 0, MPI_COMM_WORLD, &recvReq);
         MPI_Wait(&sendReq, nullptr);
         MPI_Wait(&recvReq, nullptr);
-        int l = recvBlockIdx * blockSize;
-        int r = l + blockSize;
+        int l = recvInterval.first * 4;
+        int r = recvInterval.second * 4;
         while (l < r) {
             *static_cast<float*>(sendbuf + l) = *static_cast<float*>(recvbuf + l);
             l += 4;
         }
     }
-    // #ifdef DEBUG
-    // if (my_rank == 0)
-    // printSendBuf(sendbuf, n);
-    // #endif
     // Finally, Update recvbuf
     if (my_rank == 0) {
         for (int i = 0; i < n; i++) {
             *static_cast<float*>(recvbuf + i * 4) = *static_cast<float*>(sendbuf + i * 4);
         }
     }
-    // #ifdef DEBUG
-    // if (my_rank == 0) {
-    //     printSendBuf(recvbuf, n);
-    // }
-    // #endif // DEBUG
 }
 
 
@@ -142,9 +144,6 @@ int main(int argc, char *argv[])
     srand(time(NULL) + my_rank);
     for (int i = 0; i < n; ++i)
         mpi_sendbuf[i] = static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
-    //FIXME: remember to restore
-    // for (int i = 0; i < n; i++)
-    //     mpi_sendbuf[i] = i;
     memcpy(naive_sendbuf, mpi_sendbuf, n * sizeof(float));
     memcpy(ring_sendbuf, mpi_sendbuf, n * sizeof(float));
 
@@ -153,15 +152,17 @@ int main(int argc, char *argv[])
     Naive_Allreduce(naive_sendbuf, naive_recvbuf, n, MPI_COMM_WORLD, comm_sz, my_rank);
     Ring_Allreduce(ring_sendbuf, ring_recvbuf, n, MPI_COMM_WORLD, comm_sz, my_rank);
     bool correct = true;
-    
     for (int i = 0; i < n; ++i)
         if (abs(mpi_recvbuf[i] - ring_recvbuf[i]) > EPS)
         {
             correct = false;
             break;
         }
-    if (correct && my_rank == 0) 
-        std::cout << "correct!" << std::endl;
+    #ifdef DEBUG
+    if (my_rank == 0) {
+        std::cout << "correct." << std::endl;
+    }
+    #endif // DEBUG
     if (correct)
     {
         auto beg = ch::high_resolution_clock::now();
