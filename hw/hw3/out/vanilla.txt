@@ -1,2 +1,0 @@
-Sort uniform parts: 1895.02 ms
-Sort random parts: 4261.77 ms
